@@ -59,6 +59,57 @@ sre-observability-demo/
     └── service.yaml     # NodePort 30080
 ```
 
+## 各组件 YAML 配置明细
+
+### namespaces/ (命名空间)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| namespace.yaml | Namespace x2 | `demo` (demo-api 应用), `monitoring` (全部可观测性组件) |
+
+### storage/ (local-path 存储供应器)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| storage/rbac.yaml | ServiceAccount / ClusterRole / ClusterRoleBinding | SA `local-path-provisioner-service-account`; 角色授权 nodes/pvcs/configmaps 读取, persistentvolumes/pods 全权, events 创建, storageclasses 读取 |
+| storage/configmap.yaml | ConfigMap `local-path-config` | `config.json`: PV 根目录 `/var/local-path-provisioner`; `setup`/`teardown` 脚本使用 provisioner 注入的 `VOL_DIR` 变量; `helperPod.yaml` 使用 busybox:1.36 |
+| storage/deployment.yaml | Deployment | 镜像 `local-path-provisioner:v0.0.31`; 启动参数 `--debug start --config /etc/config/config.json`; 环境变量 `POD_NAMESPACE`; 挂载 ConfigMap 到 `/etc/config/` |
+| storage/storageclass.yaml | StorageClass `local-path` | 标注为集群**默认** StorageClass (`is-default-class: "true"`); 绑定模式 `WaitForFirstConsumer`; 回收策略 `Delete` |
+
+### tempo/ (链路追踪后端)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| tempo/configmap.yaml | ConfigMap `tempo-config` | `tempo.yaml`: 查询端口 3200; OTLP 接收 gRPC 4317 / HTTP 4318; trace 存储后端 `local` (`/var/tempo/traces`), WAL 路径 `/var/tempo/wal` |
+| tempo/deployment.yaml | Deployment | 镜像 `tempo:2.9.0`; 启动参数 `-config.file=/etc/tempo/tempo.yaml`; 暴露端口 3200/4317/4318; readiness 探针 `/ready`; trace 数据用 emptyDir (当前未持久化) |
+| tempo/service.yaml | Service (ClusterIP) | `tempo.monitoring.svc.cluster.local` 的 3200 (Grafana 查询) / 4317+4318 (demo-api 上报 traces) |
+
+### prometheus/ (指标监控)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| prometheus/rbac.yaml | ServiceAccount / ClusterRole / ClusterRoleBinding | SA `prometheus`; 授权 nodes, nodes/proxy, services, endpoints, pods 读取及 `/metrics` 非资源 URL, 供 apiserver proxy 抓取使用 |
+| prometheus/configmap.yaml | ConfigMap `prometheus-config` | `prometheus.yml`: 全局抓取间隔 30s; 三个 job — `prometheus` (自身 9090), `kubernetes-nodes-cadvisor` (https 经 apiserver proxy 抓 `/api/v1/nodes/<node>/proxy/metrics/cadvisor`, 使用 SA token, `insecure_skip_verify`), `kubernetes-pods` (按注解 `prometheus.io/scrape: "true"` 自动发现) |
+| prometheus/pvc.yaml | PVC `prometheus-data` | 10Gi, RWO, StorageClass `local-path` |
+| prometheus/deployment.yaml | Deployment | 镜像 `prom/prometheus:v3.5.0`; `strategy: Recreate`; initContainer `fix-perm` 将数据目录属主改为 65534:65534; 参数 `--storage.tsdb.retention.time=15d` (保留 15 天); 端口 9090 |
+| prometheus/service.yaml | Service (ClusterIP) | 9090, 供 Grafana 数据源访问 |
+
+### grafana/ (可视化)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| grafana/configmap.yaml | ConfigMap `grafana-datasources` | 预置两个数据源: `Prometheus` (默认, url `http://prometheus.monitoring.svc.cluster.local:9090`) 与 `Tempo` (uid 固定为 `tempo`, url `http://tempo.monitoring.svc.cluster.local:3200`) |
+| grafana/pvc.yaml | PVC `grafana-data` | 10Gi, RWO, StorageClass `local-path` |
+| grafana/deployment.yaml | Deployment | 镜像 `grafana:12.2.0`; `strategy: Recreate`; initContainer `fix-perm` 属主改为 472:472; 环境变量 `GF_SECURITY_ADMIN_USER=admin` / `GF_SECURITY_ADMIN_PASSWORD=admin`; PVC 挂 `/var/lib/grafana`, 数据源挂 `/etc/grafana/provisioning/datasources`; readiness 探针 `/api/health` |
+| grafana/service.yaml | Service (NodePort) | 3000 -> nodePort **30300**, 对外提供 HTTP 访问 |
+
+### demo-api/ (Python 演示应用)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| demo-api/deployment.yaml | Deployment | 镜像 `demo-api:v1` (源码在 python-observability-demo 仓库); 2 副本; 端口 5000; 环境变量 `OTEL_SERVICE_NAME=demo-api`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://tempo.monitoring.svc.cluster.local:4318/v1/traces`; 资源 requests 100m/128Mi, limits 500m/256Mi |
+| demo-api/service.yaml | Service (NodePort) | 80 -> 5000, nodePort **30080**, 对外提供 `/api/process` 等接口 |
+
 ## 部署方式
 
 按依赖顺序 apply (storage 必须先于其它组件, 因为 PVC 依赖其 StorageClass):
