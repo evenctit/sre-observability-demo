@@ -1,0 +1,30 @@
+# Blackbox Exporter 部署 (HTTP 探测, 用于检测 demo-api 健康状态)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackbox-exporter
+  namespace: monitoring
+  labels:
+    app: blackbox-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blackbox-exporter
+  template:
+    metadata:
+      labels:
+        app: blackbox-exporter
+    spec:
+      containers:
+        - name: blackbox-exporter
+          image: docker.m.daocloud.io/prom/blackbox-exporter:v0.27.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9115
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9115
+            initialDelaySeconds: 10

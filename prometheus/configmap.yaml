@@ -49,3 +49,22 @@ data:
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
             target_label: __address__
+      # Blackbox HTTP 探测: 检测 demo-api 健康检查接口
+      # 指标: probe_success (1=健康, 0=异常), probe_duration_seconds, probe_http_status_code
+      - job_name: blackbox-demo-api
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets:
+              - http://demo-api.demo.svc.cluster.local/healthz
+        relabel_configs:
+          # 探测目标地址注入 ?target= 参数
+          - source_labels: [__address__]
+            target_label: __param_target
+          # 保留目标地址为 instance 标签, 便于展示
+          - source_labels: [__param_target]
+            target_label: instance
+          # 实际抓取地址改为 blackbox-exporter
+          - target_label: __address__
+            replacement: blackbox-exporter.monitoring.svc.cluster.local:9115

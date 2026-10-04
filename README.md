@@ -1,6 +1,6 @@
 # SRE 可观测性演示平台 (sre-observability-demo)
 
-本项目以 Infrastructure as Code 的方式管理一套部署在 Kubernetes (v1.37.1) 上的完整可观测性平台，包含链路追踪 (Tempo)、指标监控 (Prometheus)、日志采集 (Loki + OpenTelemetry Collector)、可视化 (Grafana)，以及一个带 OpenTelemetry 埋点和 JSON 结构化日志的 Python 演示应用 (demo-api)。
+本项目以 Infrastructure as Code 的方式管理一套部署在 Kubernetes (v1.37.1) 上的完整可观测性平台，包含链路追踪 (Tempo)、指标监控 (Prometheus)、黑盒健康探测与邮件告警 (Blackbox Exporter + Grafana Alerting)、日志采集 (Loki + OpenTelemetry Collector)、可视化 (Grafana)，以及一个带 OpenTelemetry 埋点和 JSON 结构化日志的 Python 演示应用 (demo-api)。
 
 ## 架构
 
@@ -29,18 +29,31 @@
           │        http://<节点IP>:30080                        │
           │   /api/process 内部调用 method_a + method_b         │
           │   JSON 日志输出到 stdout (含 method/n/duration 等)   │
-          └────────────────────────┬────────────────────────────┘
-                                   │ 容器日志落盘 /var/log/pods
-                   ┌───────────────▼───────────────────┐
-                   │ OpenTelemetry Collector (DaemonSet)│
-                   │ filelog 采集 -> CRI/JSON 解析      │
-                   │ 提取 K8s 元数据 -> 发送 Loki        │
-                   └───────────────────────────────────┘
+          └────────┬───────────────────┬────────────────────────┘
+                   │ 容器日志落盘       │ HTTP /healthz 探测
+                   │ /var/log/pods     │
+   ┌───────────────▼───────────────┐   │
+   │ OpenTelemetry Collector (DS)  │   │   ┌────────────────────────────┐
+   │ filelog 采集 -> CRI/JSON 解析  │   │   │ Blackbox Exporter v0.27.0  │
+   │ 提取 K8s 元数据 -> 发送 Loki    │   └──>│ http_2xx 探测 /healthz     │
+   └───────────────────────────────┘       └──────────┬─────────────────┘
+                                                      │ probe_success 等
+                                          ┌───────────▼─────────────┐
+                                          │ Prometheus 抓取探测指标   │
+                                          └───────────┬─────────────┘
+                                                      │ Grafana Alerting:
+                                                      │ probe_success < 1 持续 1m
+                                                      │ -> 邮件 yschen0925@sina.com
 ```
 
 日志链路: demo-api 打印单行 JSON 日志到 stdout -> containerd 落盘 `/var/log/pods/` ->
 OpenTelemetry Collector (DaemonSet, filelog receiver) 解析 CRI 头与 JSON ->
 通过 OTLP/HTTP 发送到 Loki 原生摄入端点 (`/otlp/v1/logs`) -> Grafana 日志面板展示。
+
+健康探测与告警链路: Prometheus (blackbox-demo-api job) 调用 Blackbox Exporter 的
+`/probe` 接口, 探测 demo-api 的 `/healthz` -> 指标 `probe_success`/`probe_http_status_code`/`probe_duration_seconds`
+-> Grafana "Demo API 健康状态" dashboard 展示; Grafana 告警规则 (probe_success < 1
+持续 1 分钟) 触发后通过 SMTP 发送告警邮件到 yschen0925@sina.com。
 
 ## 目录结构 (按组件划分)
 
@@ -66,15 +79,19 @@ sre-observability-demo/
 │   ├── rbac.yaml        # ServiceAccount
 │   ├── configmap.yaml   # filelog 采集管道 (CRI 解析/元数据/OTLP 发送 Loki)
 │   └── daemonset.yaml
+├── blackbox/            # Blackbox Exporter 黑盒健康探测
+│   ├── deployment.yaml
+│   └── service.yaml
 ├── prometheus/          # 指标监控
 │   ├── rbac.yaml        # ServiceAccount + ClusterRole (抓取 kubelet/cAdvisor)
-│   ├── configmap.yaml   # 抓取配置
+│   ├── configmap.yaml   # 抓取配置 (含 blackbox-demo-api 探测 job)
 │   ├── pvc.yaml         # 10Gi
 │   ├── deployment.yaml
 │   └── service.yaml
-├── grafana/             # 可视化
+├── grafana/             # 可视化与告警
 │   ├── configmap.yaml   # Prometheus + Tempo + Loki 数据源预配置
-│   ├── dashboard.yaml   # Dashboard as Code (Demo API 日志)
+│   ├── dashboard.yaml   # Dashboard as Code (Demo API 日志 + Demo API 健康状态)
+│   ├── alerting.yaml    # 告警 as Code (邮件 contactPoint + 策略 + 告警规则)
 │   ├── pvc.yaml         # 10Gi
 │   ├── deployment.yaml
 │   └── service.yaml     # NodePort 30300
@@ -125,12 +142,23 @@ sre-observability-demo/
 | otel-collector/configmap.yaml | ConfigMap `otel-collector-config` | filelog receiver 采集 `/var/log/pods/*/*/*.log`; operators 管道: 解析 CRI 头 (时间戳/流) -> 提升日志行到 body -> 从文件路径提取 namespace/pod/uid/container -> 写入 resource 属性 (Loki 标签, 容器名映射为 `service.name`) -> 解析 JSON 日志字段 -> severity_parser 设置日志级别; exporter `otlphttp/loki` 指向 `http://loki.monitoring.svc.cluster.local:3100/otlp`; health_check 监听 `0.0.0.0:13133` |
 | otel-collector/daemonset.yaml | DaemonSet | 镜像 `opentelemetry-collector-contrib:0.127.0`; hostPath 只读挂载节点 `/var/log/pods`; readiness 探针 13133 |
 
+### blackbox/ (黑盒健康探测)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| blackbox/deployment.yaml | Deployment | 镜像 `blackbox-exporter:v0.27.0`; 内置 `http_2xx` 模块 (HTTP 2xx 视为成功); 端口 9115; readiness 探针 `/-/healthy` |
+| blackbox/service.yaml | Service (ClusterIP) | 9115, 供 Prometheus 抓取 `/probe` 探测接口 |
+
+探测指标说明 (由 prometheus/configmap.yaml 的 `blackbox-demo-api` job 生成):
+`probe_success` (1=健康, 0=异常), `probe_duration_seconds` (探测耗时),
+`probe_http_status_code` (HTTP 状态码), 探测目标 `http://demo-api.demo.svc.cluster.local/healthz`。
+
 ### prometheus/ (指标监控)
 
 | 文件 | 资源 | 配置说明 |
 |---|---|---|
 | prometheus/rbac.yaml | ServiceAccount / ClusterRole / ClusterRoleBinding | SA `prometheus`; 授权 nodes, nodes/proxy, services, endpoints, pods 读取及 `/metrics` 非资源 URL, 供 apiserver proxy 抓取使用 |
-| prometheus/configmap.yaml | ConfigMap `prometheus-config` | `prometheus.yml`: 全局抓取间隔 30s; 三个 job — `prometheus` (自身 9090), `kubernetes-nodes-cadvisor` (https 经 apiserver proxy 抓 `/api/v1/nodes/<node>/proxy/metrics/cadvisor`, 使用 SA token, `insecure_skip_verify`), `kubernetes-pods` (按注解 `prometheus.io/scrape: "true"` 自动发现) |
+| prometheus/configmap.yaml | ConfigMap `prometheus-config` | `prometheus.yml`: 全局抓取间隔 30s; 四个 job — `prometheus` (自身 9090), `kubernetes-nodes-cadvisor` (https 经 apiserver proxy 抓 `/api/v1/nodes/<node>/proxy/metrics/cadvisor`, 使用 SA token, `insecure_skip_verify`), `kubernetes-pods` (按注解 `prometheus.io/scrape: "true"` 自动发现), `blackbox-demo-api` (经 blackbox-exporter 探测 demo-api /healthz, relabel 注入 target 参数) |
 | prometheus/pvc.yaml | PVC `prometheus-data` | 10Gi, RWO, StorageClass `local-path` |
 | prometheus/deployment.yaml | Deployment | 镜像 `prom/prometheus:v3.5.0`; `strategy: Recreate`; initContainer `fix-perm` 将数据目录属主改为 65534:65534; 参数 `--storage.tsdb.retention.time=15d` (保留 15 天); 端口 9090 |
 | prometheus/service.yaml | Service (ClusterIP) | 9090, 供 Grafana 数据源访问 |
@@ -139,10 +167,11 @@ sre-observability-demo/
 
 | 文件 | 资源 | 配置说明 |
 |---|---|---|
-| grafana/configmap.yaml | ConfigMap `grafana-datasources` | 预置三个数据源: `Prometheus` (默认, url `http://prometheus.monitoring.svc.cluster.local:9090`), `Tempo` (uid 固定为 `tempo`, url `http://tempo.monitoring.svc.cluster.local:3200`) 与 `Loki` (uid 固定为 `loki`, url `http://loki.monitoring.svc.cluster.local:3100`) |
-| grafana/dashboard.yaml | ConfigMap `grafana-dashboards` | Dashboard as Code: `dashboards.yaml` (provider, folder `SRE Demo`, 30s 自动刷新文件) + `demo-api-logs.json` (dashboard uid `demo-api-logs`, 含 Logs 面板 `{service_name="demo-api", k8s_pod_name=~"$pod"}` 与 Timeseries 面板 `sum by (detected_level) (count_over_time(...))`, Pod 变量模板) |
+| grafana/configmap.yaml | ConfigMap `grafana-datasources` | 预置三个数据源: `Prometheus` (uid 固定 `prometheus`, 默认, url `http://prometheus.monitoring.svc.cluster.local:9090`), `Tempo` (uid 固定为 `tempo`, url `http://tempo.monitoring.svc.cluster.local:3200`) 与 `Loki` (uid 固定为 `loki`, url `http://loki.monitoring.svc.cluster.local:3100`) |
+| grafana/dashboard.yaml | ConfigMap `grafana-dashboards` | Dashboard as Code: `dashboards.yaml` (provider, folder `SRE Demo`, 30s 自动刷新文件) + `demo-api-logs.json` (Logs 面板 + 日志量曲线) + `demo-api-health.json` (uid `demo-api-health`: 服务状态 UP/DOWN Stat、近5分钟失败次数 Stat、探测耗时与 HTTP 状态码曲线) |
+| grafana/alerting.yaml | ConfigMap `grafana-alerting` | 告警 as Code, 三个 provisioning 文件 — `contact-points.yaml` (email 接收人 yschen0925@sina.com), `policies.yaml` (根路由 -> demo-api-email), `alert-rules.yaml` (规则组 `demo-api-health`: 规则 "Demo API 无法访问", 条件 `probe_success{job="blackbox-demo-api"} < 1` 持续 1m 触发, noDataState=Alerting, severity=critical) |
+| grafana/deployment.yaml | Deployment | 镜像 `grafana:12.2.0`; `strategy: Recreate`; initContainer `fix-perm` 属主改为 472:472; 环境变量 `GF_SECURITY_ADMIN_USER=admin` / `GF_SECURITY_ADMIN_PASSWORD=admin`; SMTP 告警发件配置 `GF_SMTP_ENABLED=true`, `GF_SMTP_HOST=smtp.sina.com:465`, 发件账号/授权码为占位符 `REPLACE-WITH-SENDER@sina.com` / `REPLACE-WITH-SMTP-AUTH-CODE` (替换后重启生效); PVC 挂 `/var/lib/grafana`, 数据源挂 `/etc/grafana/provisioning/datasources`, 告警配置挂 `/etc/grafana/provisioning/alerting`; readiness 探针 `/api/health` |
 | grafana/pvc.yaml | PVC `grafana-data` | 10Gi, RWO, StorageClass `local-path` |
-| grafana/deployment.yaml | Deployment | 镜像 `grafana:12.2.0`; `strategy: Recreate`; initContainer `fix-perm` 属主改为 472:472; 环境变量 `GF_SECURITY_ADMIN_USER=admin` / `GF_SECURITY_ADMIN_PASSWORD=admin`; PVC 挂 `/var/lib/grafana`, 数据源挂 `/etc/grafana/provisioning/datasources`; readiness 探针 `/api/health` |
 | grafana/service.yaml | Service (NodePort) | 3000 -> nodePort **30300**, 对外提供 HTTP 访问 |
 
 ### demo-api/ (Python 演示应用)
@@ -162,6 +191,7 @@ kubectl apply -f storage/
 kubectl apply -f tempo/
 kubectl apply -f loki/
 kubectl apply -f otel-collector/
+kubectl apply -f blackbox/
 kubectl apply -f prometheus/
 kubectl apply -f grafana/
 kubectl apply -f demo-api/
@@ -214,12 +244,36 @@ curl -s 'http://127.0.0.1:3100/loki/api/v1/query_range?query=%7Bservice_name%3D%
 
 3. 打开 Grafana (http://<节点IP>:30300) -> Dashboards -> SRE Demo -> "Demo API 日志": Logs 面板显示 demo-api 的 JSON 日志 (含 method_a/method_b 的开始与完成、耗时等中文消息), 下方 Timeseries 面板显示每分钟日志行数 (按级别分组)。
 
+## 验证健康探测与告警
+
+1. 验证探测指标 (从集群内查询 Prometheus):
+
+```bash
+kubectl -n monitoring port-forward --address 127.0.0.1 svc/prometheus 9090:9090 &
+curl -s 'http://127.0.0.1:9090/api/v1/query?query=probe_success%7Bjob%3D%22blackbox-demo-api%22%7D'
+# 正常返回 value "1"; demo-api 宕机时返回 "0"
+```
+
+2. 打开 Grafana -> Dashboards -> SRE Demo -> "Demo API 健康状态": 服务状态 Stat 显示 "UP 正常" (绿色), 近5分钟失败次数、探测耗时与 HTTP 状态码曲线。
+
+3. 告警链路验证 (down 场景): 将 demo-api 缩容到 0 (`kubectl -n demo scale deploy/demo-api --replicas=0`), 约 2 分钟后 Grafana 告警 "Demo API 无法访问" 进入 Alerting 状态并尝试发送邮件到 yschen0925@sina.com; 验证完恢复 `--replicas=2`, 告警回到 Normal。
+
+4. 查看告警状态:
+
+```bash
+curl -s -u admin:admin "http://<节点IP>:30300/api/prometheus/grafana/api/v1/alerts"
+```
+
+注意: 邮件实际发送需要先在 grafana/deployment.yaml 中将 SMTP 占位符替换为真实的
+新浪邮箱发件账号与授权码, 再执行 `kubectl -n monitoring rollout restart deploy/grafana`。
+
 ## 镜像与版本
 
 | 组件 | 版本 | 镜像来源 |
 |---|---|---|
 | Kubernetes | v1.37.1 | registry.aliyuncs.com/google_containers |
 | Prometheus | v3.5.0 | docker.m.daocloud.io/prom/prometheus |
+| Blackbox Exporter | v0.27.0 | docker.m.daocloud.io/prom/blackbox-exporter |
 | Grafana | 12.2.0 | docker.m.daocloud.io/grafana/grafana |
 | Tempo | 2.9.0 | docker.m.daocloud.io/grafana/tempo |
 | Loki | 3.4.2 | docker.m.daocloud.io/grafana/loki |
@@ -250,3 +304,6 @@ git add . && git commit -m "..." && git push
 - health_check 扩展必须配置 `endpoint: 0.0.0.0:13133`, 默认仅监听 localhost 会导致 K8s 探针失败 (Pod 卡在 0/1 Running)
 - 修改 grafana/configmap.yaml 或 dashboard.yaml 后需重启 Grafana (`kubectl -n monitoring rollout restart deploy/grafana`) 才能生效
 - Loki 标签: `service_name` 来自容器名, 与 Tempo 的 `service.name` 一致; `k8s_pod_name`/`k8s_namespace_name` 等来自文件路径解析; JSON 字段 (level/method/duration_ms) 存于 structured metadata
+- Grafana 12 告警 provisioning: email contactPoint 的 `settings.addresses` 是**字符串** (多个收件人分号分隔), 写成数组会启动崩溃; 告警规则引用的数据源需要固定 uid (datasources.yaml 中 `uid: prometheus`), 且修改 uid 后旧库中同名的自动 uid 数据源会冲突导致启动失败 ("data source not found"), 需删除重建 PVC
+- ConfigMap 的 block scalar (`|-`) 中顶格 `---` 会终止字符串: 多个 provisioning 文档必须拆成不同的 key, 不能在一个 key 内用 `---` 分隔
+- SMTP 邮件告警: 发件配置在 grafana/deployment.yaml 环境变量 (当前为占位符); 告警收件人为 yschen0925@sina.com (grafana/alerting.yaml); 告警规则状态可用 `/api/prometheus/grafana/api/v1/alerts` API 查询

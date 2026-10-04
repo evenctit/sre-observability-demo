@@ -1,0 +1,127 @@
+# Grafana 统一告警 provisioning ConfigMap (as code)
+# 挂载到 /etc/grafana/provisioning/alerting/, Grafana 启动时自动加载
+# 注意: 三个 provisioning 部分拆为三个 key (每个 key 一个独立 yaml 文档)。
+# 不要在同一个 key 内用 "---" 分隔多个文档, 因为 block scalar 中顶格的
+# "---" 会终止字符串, 导致后续内容被丢弃。
+# - 探测指标: probe_success{job="blackbox-demo-api"} (1=健康, 0=异常)
+# - 告警条件: probe_success < 1 持续 1 分钟 -> 触发
+# - 通知渠道: 邮件发送到 yschen0925@sina.com
+# 注意: SMTP 发件账号与授权码在 grafana/deployment.yaml 的环境变量中配置,
+#       未配置正确的授权码时告警会触发但邮件发送失败 (UI 中可见错误)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alerting
+  namespace: monitoring
+data:
+  contact-points.yaml: |-
+    apiVersion: 1
+    contactPoints:
+      - orgId: 1
+        name: demo-api-email
+        receivers:
+          - uid: demo-api-email-receiver
+            type: email
+            settings:
+              # 注意: Grafana 12 中 addresses 为字符串, 多个收件人用分号分隔
+              addresses: yschen0925@sina.com
+            disableResolveMessage: false
+  policies.yaml: |-
+    apiVersion: 1
+    policies:
+      - orgId: 1
+        receiver: demo-api-email
+        group_by: [grafana_folder, alertname]
+  alert-rules.yaml: |-
+    apiVersion: 1
+    groups:
+      - orgId: 1
+        name: demo-api-health
+        folder: SRE Demo
+        interval: 30s
+        rules:
+          - uid: demo-api-probe-down
+            title: Demo API 无法访问
+            condition: C
+            for: 1m
+            noDataState: Alerting
+            execErrState: Error
+            annotations:
+              summary: demo-api 健康检查失败, 黑盒探测连续 1 分钟异常
+              description: >-
+                Blackbox Exporter 探测 http://demo-api.demo.svc.cluster.local/healthz
+                返回异常 (probe_success=0), 请检查 demo 命名空间的 demo-api Pod 状态。
+            labels:
+              severity: critical
+              service: demo-api
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 120
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  editorMode: code
+                  expr: probe_success{job="blackbox-demo-api"}
+                  instant: true
+                  intervalMs: 1000
+                  legendFormat: __auto
+                  maxDataPoints: 43200
+                  range: false
+                  refId: A
+              - refId: B
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  conditions:
+                    - evaluator:
+                        params: []
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params: [B]
+                      reducer:
+                        params: []
+                        type: last
+                  datasource:
+                    type: __expr__
+                    uid: __expr__
+                  expression: A
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  reducer: last
+                  settings:
+                    mode: dropNN
+                  type: reduce
+                  refId: B
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  conditions:
+                    - evaluator:
+                        params: [1]
+                        type: lt
+                      operator:
+                        type: and
+                      query:
+                        params: [C]
+                      reducer:
+                        params: []
+                        type: gt
+                  datasource:
+                    type: __expr__
+                    uid: __expr__
+                  expression: B
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  type: threshold
+                  refId: C

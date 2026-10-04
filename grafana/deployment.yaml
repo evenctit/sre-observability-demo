@@ -36,6 +36,20 @@ spec:
               value: admin
             - name: GF_SECURITY_ADMIN_PASSWORD
               value: admin
+            # ---------- SMTP 邮件告警配置 (新浪邮箱) ----------
+            # 发件账号与授权码为占位符, 替换后重启 Grafana 即可正常发信
+            - name: GF_SMTP_ENABLED
+              value: "true"
+            - name: GF_SMTP_HOST
+              value: smtp.sina.com:465
+            - name: GF_SMTP_USER
+              value: REPLACE-WITH-SENDER@sina.com
+            - name: GF_SMTP_PASSWORD
+              value: REPLACE-WITH-SMTP-AUTH-CODE
+            - name: GF_SMTP_FROM_ADDRESS
+              value: REPLACE-WITH-SENDER@sina.com
+            - name: GF_SMTP_FROM_NAME
+              value: SRE Observability Demo
           ports:
             - containerPort: 3000
           volumeMounts:
@@ -49,6 +63,9 @@ spec:
             # dashboard JSON 文件目录
             - name: dashboards-json
               mountPath: /var/lib/grafana/dashboards
+            # 告警配置 (contactPoint / 策略 / 告警规则)
+            - name: alerting
+              mountPath: /etc/grafana/provisioning/alerting
           readinessProbe:
             httpGet:
               path: /api/health
@@ -74,3 +91,9 @@ spec:
             items:
               - key: demo-api-logs.json
                 path: demo-api-logs.json
+              - key: demo-api-health.json
+                path: demo-api-health.json
+        # 告警配置文件 (grafana/alerting.yaml)
+        - name: alerting
+          configMap:
+            name: grafana-alerting
