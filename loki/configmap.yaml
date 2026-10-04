@@ -1,0 +1,37 @@
+# Loki 单体模式配置
+# - 端口 3100: HTTP (查询 API + OTLP 日志摄入 /otlp/v1/logs)
+# - TSDB 索引 + filesystem 对象存储, 数据落在 PVC
+# - allow_structured_metadata 开启以支持 OTLP 原生摄入 (structured metadata)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: monitoring
+data:
+  loki.yaml: |-
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      path_prefix: /var/loki
+      storage:
+        filesystem:
+          chunks_directory: /var/loki/chunks
+          rules_directory: /var/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      allow_structured_metadata: true
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h

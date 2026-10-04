@@ -1,0 +1,88 @@
+# OpenTelemetry Collector 配置 (日志采集管道)
+# 数据流: 节点 /var/log/pods (containerd CRI 日志) -> filelog 解析 ->
+#         提取 K8s 元数据 -> OTLP/HTTP -> Loki (/otlp/v1/logs 原生摄入)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+data:
+  config.yaml: |-
+    receivers:
+      # 采集节点上所有容器日志文件 (containerd 格式:
+      # "2026-10-04T20:12:58.123456789+08:00 stdout F <日志内容>")
+      filelog:
+        include:
+          - /var/log/pods/*/*/*.log
+        exclude: []
+        start_at: end
+        include_file_path: true
+        operators:
+          # 1. 解析 CRI 日志头: 时间戳/流类型/完整标志, 并规范化时间戳
+          - type: regex_parser
+            id: parse_cri_header
+            regex: '^(?P<time>[^ ]+) (?P<stream>stdout|stderr) (?P<logtag>[PF]) (?P<log>.*)$'
+            timestamp:
+              parse_from: attributes.time
+              layout_type: gotime
+              layout: '2006-01-02T15:04:05.999999999Z07:00'
+          # 2. CRI 头中的 log 字段即为真实日志行, 提升为 body
+          - type: move
+            id: promote_log_to_body
+            from: attributes.log
+            to: body
+          # 3. 从日志文件路径提取 K8s 元数据
+          #    路径格式: /var/log/pods/<ns>_<pod>_<uid>/<container>/<n>.log
+          - type: regex_parser
+            id: extract_k8s_meta
+            parse_from: attributes["log.file.path"]
+            regex: '^/var/log/pods/(?P<k8s_ns>[^_]+)_(?P<k8s_pod>[^_]+)_(?P<k8s_uid>[^/]+)/(?P<k8s_container>[^/]+)/'
+            on_error: drop
+          # 4. 将元数据移动到 resource 属性 (Loki 中成为标签)
+          - type: move
+            from: attributes.k8s_ns
+            to: resource["k8s.namespace.name"]
+          - type: move
+            from: attributes.k8s_pod
+            to: resource["k8s.pod.name"]
+          - type: move
+            from: attributes.k8s_uid
+            to: resource["k8s.pod.uid"]
+          - type: move
+            from: attributes.k8s_container
+            to: resource["k8s.container.name"]
+          # 5. 用容器名作为服务名, 使 Loki 的 service_name 标签与链路追踪一致
+          - type: move
+            from: attributes.k8s_container
+            to: resource["service.name"]
+          # 6. demo-api 输出的单行 JSON 日志解析为属性 (非 JSON 行自动跳过)
+          - type: json_parser
+            id: parse_app_json
+            parse_from: body
+            if: 'body matches "^{.*}$"'
+            on_error: send
+          # 7. 根据 JSON 中的 level 字段设置日志严重级别
+          - type: severity_parser
+            id: parse_severity
+            parse_from: attributes.level
+            if: 'attributes.level != nil'
+            on_error: send
+    processors:
+      batch:
+        send_batch_size: 512
+        timeout: 5s
+    exporters:
+      # Loki 3.x 原生 OTLP 日志摄入端点 (collector 自动追加 /v1/logs)
+      otlphttp/loki:
+        endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+    extensions:
+      # 健康检查端点需监听 0.0.0.0, 否则 K8s 探针无法访问
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        logs:
+          receivers: [filelog]
+          processors: [batch]
+          exporters: [otlphttp/loki]

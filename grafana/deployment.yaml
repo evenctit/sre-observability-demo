@@ -43,6 +43,12 @@ spec:
               mountPath: /var/lib/grafana
             - name: datasources
               mountPath: /etc/grafana/provisioning/datasources
+            # dashboard provider 配置 (provisioning 自动加载)
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            # dashboard JSON 文件目录
+            - name: dashboards-json
+              mountPath: /var/lib/grafana/dashboards
           readinessProbe:
             httpGet:
               path: /api/health
@@ -55,3 +61,16 @@ spec:
         - name: datasources
           configMap:
             name: grafana-datasources
+        # 与 dashboards-json 同一个 ConfigMap, 通过 items 拆分挂载到不同目录
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards
+            items:
+              - key: dashboards.yaml
+                path: dashboards.yaml
+        - name: dashboards-json
+          configMap:
+            name: grafana-dashboards
+            items:
+              - key: demo-api-logs.json
+                path: demo-api-logs.json

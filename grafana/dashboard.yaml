@@ -1,0 +1,95 @@
+# Grafana Dashboard as Code (provisioning)
+# - dashboards.yaml: dashboard provider 配置, 指向 /var/lib/grafana/dashboards
+# - demo-api-logs.json: "Demo API 日志" dashboard (Logs 面板 + 日志量趋势面板)
+# 数据源使用 Loki (uid=loki), 查询 OTLP 原生摄入生成的 service_name 标签
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+data:
+  dashboards.yaml: |-
+    apiVersion: 1
+    providers:
+      - name: sre-demo
+        folder: SRE Demo
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+  demo-api-logs.json: |-
+    {
+      "uid": "demo-api-logs",
+      "title": "Demo API 日志",
+      "description": "通过 OpenTelemetry Collector 采集、Loki 存储的 demo-api 应用日志",
+      "tags": ["demo-api", "logs", "loki"],
+      "timezone": "browser",
+      "editable": true,
+      "refresh": "10s",
+      "schemaVersion": 39,
+      "version": 1,
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "pod",
+            "label": "Pod",
+            "type": "query",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "query": { "label": "k8s_pod_name", "stream": "", "refId": "var" },
+            "refresh": 2,
+            "includeAll": true,
+            "allValue": ".*",
+            "current": { "selected": true, "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "logs",
+          "title": "demo-api 应用日志 (service_name=demo-api)",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "gridPos": { "h": 16, "w": 24, "x": 0, "y": 0 },
+          "options": {
+            "showTime": true,
+            "showLabels": true,
+            "showCommonLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": false,
+            "enableLogDetails": true,
+            "sortOrder": "Descending",
+            "dedupStrategy": "none"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "loki", "uid": "loki" },
+              "expr": "{service_name=\"demo-api\", k8s_pod_name=~\"$pod\"}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "每分钟日志行数",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "lineWidth": 1, "fillOpacity": 20, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "loki", "uid": "loki" },
+              "expr": "sum by (detected_level) (count_over_time({service_name=\"demo-api\"}[1m]))",
+              "legendFormat": "{{detected_level}}"
+            }
+          ]
+        }
+      ]
+    }

@@ -1,0 +1,8 @@
+# OpenTelemetry Collector 的 RBAC 配置
+# 说明: 本部署通过 filelog 从节点文件路径解析 Pod 元数据, 不访问 K8s API,
+# 保留最小 SA 供 DaemonSet 使用
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: monitoring

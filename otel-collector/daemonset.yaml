@@ -1,0 +1,48 @@
+# OpenTelemetry Collector DaemonSet
+# 以 DaemonSet 方式运行在每个节点, 读取节点容器日志 (/var/log/pods)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: otel-collector
+          image: docker.m.daocloud.io/otel/opentelemetry-collector-contrib:0.127.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/conf/config.yaml
+          ports:
+            - containerPort: 13133
+              name: health
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        # 节点容器日志目录 (containerd CRI 日志)
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+            type: Directory

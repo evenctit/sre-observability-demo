@@ -1,6 +1,7 @@
 # Grafana 数据源预配置
 # - Prometheus: 指标查询
 # - Tempo: 链路追踪查询 (uid 固定为 tempo)
+# - Loki: 日志查询 (uid 固定为 loki)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -20,3 +21,8 @@ data:
         type: tempo
         access: proxy
         url: http://tempo.monitoring.svc.cluster.local:3200
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
