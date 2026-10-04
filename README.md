@@ -19,7 +19,7 @@
           ┌────────────────▼──┐ ┌─────▼──────┐ ┌─▼──────────────────┐
           │ Prometheus v3.5.0 │ │ Tempo 2.9.0│ │ Loki 3.4.2 (10Gi)  │
           │ (PVC 10Gi)        │ │ OTLP:4317/8│ │ OTLP摄入: 3100/otlp│
-          │ 抓取 cAdvisor     │ │ 查询: 3200 │ │ LogQL 查询: 3100   │
+          │ 抓取cAdvisor+探测 │ │ 查询: 3200 │ │ LogQL 查询: 3100   │
           └────────▲──────────┘ └─────▲──────┘ └─▲──────────────────┘
                    │                  │          │ OTLP/HTTP (logs)
                    │                  │ OTLP     │
@@ -163,7 +163,7 @@ sre-observability-demo/
 | prometheus/deployment.yaml | Deployment | 镜像 `prom/prometheus:v3.5.0`; `strategy: Recreate`; initContainer `fix-perm` 将数据目录属主改为 65534:65534; 参数 `--storage.tsdb.retention.time=15d` (保留 15 天); 端口 9090 |
 | prometheus/service.yaml | Service (ClusterIP) | 9090, 供 Grafana 数据源访问 |
 
-### grafana/ (可视化)
+### grafana/ (可视化与告警)
 
 | 文件 | 资源 | 配置说明 |
 |---|---|---|
@@ -178,7 +178,7 @@ sre-observability-demo/
 
 | 文件 | 资源 | 配置说明 |
 |---|---|---|
-| demo-api/deployment.yaml | Deployment | 镜像 `demo-api:v1` (源码在 python-observability-demo 仓库); 2 副本; 端口 5000; 环境变量 `OTEL_SERVICE_NAME=demo-api`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://tempo.monitoring.svc.cluster.local:4318/v1/traces`; 资源 requests 100m/128Mi, limits 500m/256Mi |
+| demo-api/deployment.yaml | Deployment | 镜像 `demo-api:v2` (源码在 python-observability-demo 仓库, v2 新增 JSON 结构化日志输出); 2 副本; 端口 5000; 环境变量 `OTEL_SERVICE_NAME=demo-api`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://tempo.monitoring.svc.cluster.local:4318/v1/traces`; 资源 requests 100m/128Mi, limits 500m/256Mi |
 | demo-api/service.yaml | Service (NodePort) | 80 -> 5000, nodePort **30080**, 对外提供 `/api/process` 等接口 |
 
 ## 部署方式
@@ -203,9 +203,10 @@ demo-api 的镜像 `demo-api:v2` (含 JSON 结构化日志) 由源码仓库 pyth
 
 | 组件 | 地址 | 说明 |
 |---|---|---|
-| Grafana | http://<节点IP>:30300 | 账号 admin / admin; dashboard: SRE Demo -> Demo API 日志 |
-| demo-api | http://<节点IP>:30080 | RESTful API |
+| Grafana | http://<节点IP>:30300 | 账号 admin / admin; dashboard: SRE Demo -> "Demo API 日志" 与 "Demo API 健康状态" |
+| demo-api | http://<节点IP>:30080 | RESTful API (/api/process, /healthz) |
 | Prometheus | ClusterIP:9090 | 集群内访问 (Grafana 数据源) |
+| Blackbox Exporter | ClusterIP:9115 | 集群内访问 (Prometheus 经 /probe 探测) |
 | Tempo | ClusterIP:3200/4317/4318 | 集群内访问 (查询 + OTLP 接收 traces) |
 | Loki | ClusterIP:3100 | 集群内访问 (LogQL 查询 + OTLP 摄入 logs) |
 
