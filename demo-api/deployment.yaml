@@ -1,0 +1,39 @@
+# demo-api 应用部署
+# 镜像 demo-api:v1 由源码仓库 python-observability-demo 构建并导入集群 containerd
+# 通过 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT 将链路数据上报到 Tempo
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+  namespace: demo
+  labels:
+    app: demo-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-api
+  template:
+    metadata:
+      labels:
+        app: demo-api
+    spec:
+      containers:
+        - name: demo-api
+          image: demo-api:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: demo-api
+            # 上报到 Tempo 的 OTLP/HTTP 接口
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: http://tempo.monitoring.svc.cluster.local:4318/v1/traces
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

@@ -1,0 +1,10 @@
+# 命名空间定义: demo(应用) 与 monitoring(可观测性组件)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring

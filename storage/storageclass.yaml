@@ -1,0 +1,11 @@
+# StorageClass: local-path (集群默认存储类)
+# PV 数据落在节点 /var/local-path-provisioner/ 目录
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
