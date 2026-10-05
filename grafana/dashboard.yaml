@@ -358,26 +358,38 @@ data:
   demo-api-logs.json: |-
     {
       "uid": "demo-api-logs",
-      "title": "Demo API 日志",
-      "description": "通过 OpenTelemetry Collector 采集、Loki 存储的 demo-api 应用日志",
-      "tags": ["demo-api", "logs", "loki"],
+      "title": "服务日志总览 (Loki)",
+      "description": "通过 OpenTelemetry Collector 采集整个集群所有服务的容器日志 (应用 + 系统组件), Loki 存储, 按 service_name 动态筛选, 新增服务自动纳入",
+      "tags": ["logs", "loki", "multi-service"],
       "timezone": "browser",
       "editable": true,
       "refresh": "10s",
       "schemaVersion": 39,
-      "version": 1,
+      "version": 2,
       "time": { "from": "now-6h", "to": "now" },
       "templating": {
         "list": [
+          {
+            "name": "service_name",
+            "label": "服务",
+            "type": "query",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "query": { "label": "service_name", "stream": "{service_name=~\".+\"}", "refId": "var" },
+            "refresh": 1,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".+",
+            "current": { "selected": true, "text": "All", "value": "$__all" }
+          },
           {
             "name": "pod",
             "label": "Pod",
             "type": "query",
             "datasource": { "type": "loki", "uid": "loki" },
-            "query": { "label": "k8s_pod_name", "stream": "", "refId": "var" },
-            "refresh": 2,
+            "query": { "label": "k8s_pod_name", "stream": "{service_name=~\"$service_name\"}", "refId": "var" },
+            "refresh": 1,
             "includeAll": true,
-            "allValue": ".*",
+            "allValue": ".+",
             "current": { "selected": true, "text": "All", "value": "$__all" }
           }
         ]
@@ -385,10 +397,52 @@ data:
       "panels": [
         {
           "id": 1,
-          "type": "logs",
-          "title": "demo-api 应用日志 (service_name=demo-api)",
+          "type": "timeseries",
+          "title": "各服务日志量对比 (每分钟, 按服务分组)",
           "datasource": { "type": "loki", "uid": "loki" },
-          "gridPos": { "h": 16, "w": 24, "x": 0, "y": 0 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "lineWidth": 1, "fillOpacity": 20, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "loki", "uid": "loki" },
+              "expr": "sum by (service_name) (count_over_time({service_name=~\"$service_name\"}[1m]))",
+              "legendFormat": "{{service_name}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "每分钟日志行数 (按级别)",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "lineWidth": 1, "fillOpacity": 20, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "loki", "uid": "loki" },
+              "expr": "sum by (detected_level) (count_over_time({service_name=~\"$service_name\"}[1m]))",
+              "legendFormat": "{{detected_level}}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "logs",
+          "title": "全集群服务日志 (service_name / Pod 可筛选)",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "gridPos": { "h": 18, "w": 24, "x": 0, "y": 8 },
           "options": {
             "showTime": true,
             "showLabels": true,
@@ -403,28 +457,7 @@ data:
             {
               "refId": "A",
               "datasource": { "type": "loki", "uid": "loki" },
-              "expr": "{service_name=\"demo-api\", k8s_pod_name=~\"$pod\"}"
-            }
-          ]
-        },
-        {
-          "id": 2,
-          "type": "timeseries",
-          "title": "每分钟日志行数",
-          "datasource": { "type": "loki", "uid": "loki" },
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
-          "fieldConfig": {
-            "defaults": {
-              "custom": { "lineWidth": 1, "fillOpacity": 20, "showPoints": "never" }
-            },
-            "overrides": []
-          },
-          "targets": [
-            {
-              "refId": "A",
-              "datasource": { "type": "loki", "uid": "loki" },
-              "expr": "sum by (detected_level) (count_over_time({service_name=\"demo-api\"}[1m]))",
-              "legendFormat": "{{detected_level}}"
+              "expr": "{service_name=~\"$service_name\", k8s_pod_name=~\"$pod\"}"
             }
           ]
         }
