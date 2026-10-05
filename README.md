@@ -113,7 +113,7 @@ sre-observability-demo/
 │   └── service.yaml
 ├── grafana/             # 可视化与告警
 │   ├── configmap.yaml   # Prometheus + Tempo + Loki 数据源预配置
-│   ├── dashboard.yaml   # Dashboard as Code (Demo API 日志 + Demo API 健康状态)
+│   ├── dashboard.yaml   # Dashboard as Code (Demo API 日志 + 服务健康状态总览)
 │   ├── alerting.yaml    # 告警 as Code (邮件 contactPoint + 策略 + 告警规则)
 │   ├── pvc.yaml         # 10Gi
 │   ├── deployment.yaml
@@ -265,7 +265,7 @@ demo-api 的镜像 `demo-api:v3` (含 JSON 结构化日志与 Pyroscope SDK) 由
 
 | 组件 | 地址 | 说明 |
 |---|---|---|
-| Grafana | http://<节点IP>:30300 | 账号 admin / admin; dashboard: SRE Demo -> "Demo API 日志" 与 "Demo API 健康状态" |
+| Grafana | http://<节点IP>:30300 | 账号 admin / admin; dashboard: SRE Demo -> "Demo API 日志"、"服务健康状态总览 (Blackbox)" 与 "Demo API Profiling" |
 | demo-api | http://<节点IP>:30080 | RESTful API (/api/process, /healthz) |
 | Prometheus | ClusterIP:9090 | 集群内访问 (Grafana 数据源) |
 | Blackbox Exporter | ClusterIP:9115 | 集群内访问 (Prometheus 经 /probe 探测) |
