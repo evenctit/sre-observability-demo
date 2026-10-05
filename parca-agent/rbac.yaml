@@ -1,0 +1,33 @@
+# Parca Agent 的 RBAC 配置
+# Agent 启动时需要 get nodes 获取节点信息 (用于发现容器运行时 socket)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: parca-agent
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: parca-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # Agent 需要 list pods 将采样的进程关联到 Pod 元数据
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: parca-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: parca-agent
+subjects:
+  - kind: ServiceAccount
+    name: parca-agent
+    namespace: monitoring

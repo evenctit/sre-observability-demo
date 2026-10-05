@@ -1,0 +1,57 @@
+# Parca Server 部署 (持续 profiling 存储与查询, Web UI 端口 7070)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parca
+  namespace: monitoring
+  labels:
+    app: parca
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: parca
+  template:
+    metadata:
+      labels:
+        app: parca
+    spec:
+      initContainers:
+        # 修复 PVC 目录属主, 使 parca(10065, 官方镜像默认用户) 可写
+        - name: fix-perm
+          image: docker.m.daocloud.io/library/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "chown -R 10065:10065 /var/lib/parca || true"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/parca
+      containers:
+        - name: parca
+          # 官方镜像 (docker 直连 ghcr.io 拉取后导入 containerd; nju 代理层内容不可靠)
+          image: ghcr.io/parca-dev/parca:v0.22.0
+          imagePullPolicy: IfNotPresent
+          # 注意: 该镜像 ENTRYPOINT 为空, Cmd 为 [/parca]; K8s 的 args 会替换 Cmd,
+          # 必须显式指定 command
+          command: ["/parca"]
+          args:
+            # parca v0.22 无配置文件, 持久化通过 flag 完成 (--config-path 已弃用)
+            - --enable-persistence
+            - --storage-path=/var/lib/parca
+            - --log-level=info
+          ports:
+            - containerPort: 7070
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/parca
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 7070
+            initialDelaySeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: parca-data

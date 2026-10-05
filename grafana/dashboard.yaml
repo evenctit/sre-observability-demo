@@ -154,6 +154,94 @@ data:
         }
       ]
     }
+  # demo-api-profiling: profiling dashboard (数据源 Pyroscope)
+  # 注意: Grafana 12.2 内置 pyroscope 数据源 (v5) 的 ds/query 只支持 queryType=profile,
+  # 返回火焰图帧 (level/value/self/label); 旧的 queryType=flamegraph 返回空帧,
+  # 时间序列 (SelectSeries) 亦不可用, 故第二个面板用 table 展示函数级 CPU 开销
+  demo-api-profiling.json: |-
+    {
+      "uid": "demo-api-profiling",
+      "title": "Demo API Profiling",
+      "description": "通过 Pyroscope SDK 采集的 demo-api 持续 CPU profiling (FlameGraph 与函数级 CPU 开销)",
+      "tags": ["demo-api", "profiling", "pyroscope"],
+      "timezone": "browser",
+      "editable": true,
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "version": 2,
+      "time": { "from": "now-6h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "type": "flamegraph",
+          "title": "CPU FlameGraph (service_name=demo-api)",
+          "datasource": { "type": "grafana-pyroscope-datasource", "uid": "pyroscope" },
+          "gridPos": { "h": 16, "w": 24, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "refId": "A",
+              "queryType": "profile",
+              "profileTypeId": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+              "labelSelector": "{service_name=\"demo-api\"}",
+              "groupBy": []
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "table",
+          "title": "函数级 CPU 开销明细 (process_cpu)",
+          "datasource": { "type": "grafana-pyroscope-datasource", "uid": "pyroscope" },
+          "gridPos": { "h": 12, "w": 24, "x": 0, "y": 16 },
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "align": "auto", "filterable": true },
+              "overrides": [
+                {
+                  "matcher": { "id": "byName", "options": "label" },
+                  "properties": [
+                    { "id": "displayName", "value": "调用栈函数" }
+                  ]
+                },
+                {
+                  "matcher": { "id": "byName", "options": "self" },
+                  "properties": [
+                    { "id": "displayName", "value": "自身 CPU" },
+                    { "id": "unit", "value": "ns" },
+                    { "id": "custom.width", "value": 160 }
+                  ]
+                },
+                {
+                  "matcher": { "id": "byName", "options": "value" },
+                  "properties": [
+                    { "id": "displayName", "value": "累计 CPU" },
+                    { "id": "unit", "value": "ns" },
+                    { "id": "custom.width", "value": 160 }
+                  ]
+                },
+                {
+                  "matcher": { "id": "byName", "options": "level" },
+                  "properties": [
+                    { "id": "displayName", "value": "层级" },
+                    { "id": "custom.width", "value": 100 }
+                  ]
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "queryType": "profile",
+              "profileTypeId": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+              "labelSelector": "{service_name=\"demo-api\"}",
+              "groupBy": []
+            }
+          ]
+        }
+      ]
+    }
   demo-api-logs.json: |-
     {
       "uid": "demo-api-logs",

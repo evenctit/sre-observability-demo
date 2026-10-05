@@ -1,0 +1,55 @@
+# Pyroscope Server 部署 (持续 profiling, SDK 上报与查询端口 4040)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pyroscope
+  namespace: monitoring
+  labels:
+    app: pyroscope
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: pyroscope
+  template:
+    metadata:
+      labels:
+        app: pyroscope
+    spec:
+      initContainers:
+        # 修复 PVC 目录属主, 使 pyroscope(10001, 官方镜像默认用户) 可写
+        - name: fix-perm
+          image: docker.m.daocloud.io/library/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "chown -R 10001:10001 /var/lib/pyroscope || true"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pyroscope
+      containers:
+        - name: pyroscope
+          image: docker.m.daocloud.io/grafana/pyroscope:1.13.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - -config.file=/etc/pyroscope/pyroscope.yaml
+          ports:
+            - containerPort: 4040
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pyroscope
+            - name: data
+              mountPath: /var/lib/pyroscope
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 4040
+            initialDelaySeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: pyroscope-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: pyroscope-data

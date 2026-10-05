@@ -27,3 +27,11 @@ data:
         type: loki
         access: proxy
         url: http://loki.monitoring.svc.cluster.local:3100
+      - name: Pyroscope
+        uid: pyroscope
+        # 注意: Grafana 12.2 的 pyroscope 数据源为 core 插件, 但插件 id 是完整名
+        # grafana-pyroscope-datasource, 不再接受短名 pyroscope (短名会报
+        # Could not find plugin definition for data source)
+        type: grafana-pyroscope-datasource
+        access: proxy
+        url: http://pyroscope.monitoring.svc.cluster.local:4040

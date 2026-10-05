@@ -1,6 +1,7 @@
 # demo-api 应用部署
-# 镜像 demo-api:v1 由源码仓库 python-observability-demo 构建并导入集群 containerd
+# 镜像 demo-api:v3 由源码仓库 python-observability-demo 构建并导入集群 containerd
 # 通过 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT 将链路数据上报到 Tempo
+# 通过 PYROSCOPE_SERVER_ADDRESS 持续上报 CPU profile 到 Pyroscope
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,16 +21,21 @@ spec:
     spec:
       containers:
         - name: demo-api
-          image: demo-api:v2
+          image: demo-api:v3
           imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 5000
           env:
             - name: OTEL_SERVICE_NAME
               value: demo-api
             # 上报到 Tempo 的 OTLP/HTTP 接口
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
               value: http://tempo.monitoring.svc.cluster.local:4318/v1/traces
+            # Pyroscope 持续 profiling 上报配置
+            - name: PYROSCOPE_APPLICATION_NAME
+              value: demo-api
+            - name: PYROSCOPE_SERVER_ADDRESS
+              value: http://pyroscope.monitoring.svc.cluster.local:4040
+          ports:
+            - containerPort: 5000
           resources:
             requests:
               cpu: 100m

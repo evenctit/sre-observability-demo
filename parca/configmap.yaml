@@ -1,0 +1,15 @@
+# Parca Server 配置说明 (v0.22)
+# 注意: parca v0.22 移除了 parca.yaml 中的 storage 字段, 持久化全部通过
+# 命令行 flag 完成 (见 deployment.yaml):
+#   --enable-persistence   开启 profile 与 metastore 持久化
+#   --storage-path=...     存储目录 (PVC 挂载点 /var/lib/parca)
+#   --storage-enable-wal   可选: 开启 WAL, 提高崩溃恢复能力
+# 本 ConfigMap 仅保留作为配置说明, 不再挂载到容器
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: parca-config
+  namespace: monitoring
+data:
+  parca.yaml: |-
+    # parca v0.22 无需配置文件, 所有参数通过命令行 flag 传入 (见 deployment.yaml)

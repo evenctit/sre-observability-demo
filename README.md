@@ -12,8 +12,8 @@
                                        │ NodePort
                         ┌──────────────▼──────────────┐
                         │   Grafana 12.2.0 (PVC 10Gi) │
-                        │   数据源: Prometheus + Tempo │
-                        │           + Loki            │
+                        │ 数据源: Prometheus + Tempo   │
+                        │      + Loki + Pyroscope     │
                         └──┬──────────┬──────────┬────┘
                            │          │          │
           ┌────────────────▼──┐ ┌─────▼──────┐ ┌─▼──────────────────┐
@@ -25,25 +25,31 @@
                    │                  │ OTLP     │
                    │                  │ (traces) │
           ┌────────┴──────────────────┴──────────┴─────────────┐
-          │        demo-api v2 (Flask + OpenTelemetry)          │
+          │        demo-api v3 (Flask + OpenTelemetry)          │
           │        http://<节点IP>:30080                        │
           │   /api/process 内部调用 method_a + method_b         │
           │   JSON 日志输出到 stdout (含 method/n/duration 等)   │
-          └────────┬───────────────────┬────────────────────────┘
-                   │ 容器日志落盘       │ HTTP /healthz 探测
-                   │ /var/log/pods     │
-   ┌───────────────▼───────────────┐   │
-   │ OpenTelemetry Collector (DS)  │   │   ┌────────────────────────────┐
-   │ filelog 采集 -> CRI/JSON 解析  │   │   │ Blackbox Exporter v0.27.0  │
-   │ 提取 K8s 元数据 -> 发送 Loki    │   └──>│ http_2xx 探测 /healthz     │
-   └───────────────────────────────┘       └──────────┬─────────────────┘
-                                                      │ probe_success 等
-                                          ┌───────────▼─────────────┐
-                                          │ Prometheus 抓取探测指标   │
-                                          └───────────┬─────────────┘
-                                                      │ Grafana Alerting:
-                                                      │ probe_success < 1 持续 1m
-                                                      │ -> 邮件 yschen0925@sina.com
+          └──┬───────────────────┬─────────────────┬──────────┘
+             │ 容器日志落盘       │ HTTP /healthz   │ Pyroscope SDK
+             │ /var/log/pods     │ 探测             │ 推送 CPU profile
+   ┌─────────▼───────────────┐  │                 │
+   │ OpenTelemetry Collector │  │   ┌─────────────▼───────────────┐
+   │ (DS) filelog 采集       │  │   │ Pyroscope 1.13.4 (PVC 10Gi) │
+   │ -> CRI/JSON 解析        │  │   │ 持续 profiling 存储与查询    │
+   │ -> 提取 K8s 元数据       │  └──>│ Grafana 数据源: 4040        │
+   │ -> 发送 Loki            │      └─────────────────────────────┘
+   └─────────────────────────┘      ┌─────────────────────────────┐
+   ┌─────────────────────────┐      │ Parca v0.22.0 (PVC 10Gi)    │
+   │ Blackbox Exporter       │      │ eBPF profiling server 7070  │
+   │ v0.27.0 探测 /healthz   │      │ (agent 需较旧内核, 见备注)   │
+   └───────────┬─────────────┘      └─────────────────────────────┘
+               │ probe_success 等
+   ┌───────────▼─────────────┐
+   │ Prometheus 抓取探测指标  │
+   └───────────┬─────────────┘
+               │ Grafana Alerting:
+               │ probe_success < 1 持续 1m
+               │ -> 邮件 yschen0925@sina.com
 ```
 
 日志链路: demo-api 打印单行 JSON 日志到 stdout -> containerd 落盘 `/var/log/pods/` ->
@@ -54,6 +60,11 @@ OpenTelemetry Collector (DaemonSet, filelog receiver) 解析 CRI 头与 JSON ->
 `/probe` 接口, 探测 demo-api 的 `/healthz` -> 指标 `probe_success`/`probe_http_status_code`/`probe_duration_seconds`
 -> Grafana "Demo API 健康状态" dashboard 展示; Grafana 告警规则 (probe_success < 1
 持续 1 分钟) 触发后通过 SMTP 发送告警邮件到 yschen0925@sina.com。
+
+profiling 链路: demo-api v3 内嵌 pyroscope-io Python SDK, 每 10 秒将进程 CPU profile
+(pprof) 推送到 Pyroscope -> Grafana 以 Pyroscope 为数据源提供 "Demo API Profiling"
+dashboard (FlameGraph 火焰图 + 函数级 CPU 开销表)。另部署 Parca server 提供 eBPF
+持续 profiling 服务端能力 (parca-agent 对内核版本有要求, 当前集群已停用, 详见备注)。
 
 ## 目录结构 (按组件划分)
 
@@ -82,6 +93,18 @@ sre-observability-demo/
 ├── blackbox/            # Blackbox Exporter 黑盒健康探测
 │   ├── deployment.yaml
 │   └── service.yaml
+├── pyroscope/           # 持续 profiling 后端 (Grafana 数据源, 接收 SDK 推送)
+│   ├── configmap.yaml   # HTTP 4040 + filesystem 存储
+│   ├── pvc.yaml         # 10Gi
+│   ├── deployment.yaml
+│   └── service.yaml     # ClusterIP 4040
+├── parca/               # Parca 持续 profiling server (eBPF 生态)
+│   ├── deployment.yaml  # 注意: 镜像 Entrypoint 为空, 必须显式 command: ["/parca"]
+│   ├── pvc.yaml         # 10Gi
+│   └── service.yaml     # ClusterIP 7070
+├── parca-agent/         # Parca eBPF Agent (DaemonSet, 依赖较旧内核, 当前集群已停用)
+│   ├── rbac.yaml        # ServiceAccount + ClusterRole (nodes/pods get/list/watch)
+│   └── daemonset.yaml   # privileged + hostPID, 上报 parca.monitoring:7070
 ├── prometheus/          # 指标监控
 │   ├── rbac.yaml        # ServiceAccount + ClusterRole (抓取 kubelet/cAdvisor)
 │   ├── configmap.yaml   # 抓取配置 (含 blackbox-demo-api 探测 job)
@@ -153,6 +176,41 @@ sre-observability-demo/
 `probe_success` (1=健康, 0=异常), `probe_duration_seconds` (探测耗时),
 `probe_http_status_code` (HTTP 状态码), 探测目标 `http://demo-api.demo.svc.cluster.local/healthz`。
 
+### pyroscope/ (持续 profiling 后端)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| pyroscope/configmap.yaml | ConfigMap `pyroscope-config` | `pyroscope.yaml`: HTTP 监听 4040; storage backend `filesystem` (profile 数据落 `/var/lib/pyroscope`) |
+| pyroscope/pvc.yaml | PVC `pyroscope-data` | 10Gi, RWO, StorageClass `local-path` |
+| pyroscope/deployment.yaml | Deployment | 镜像 `grafana/pyroscope:1.13.4`; `strategy: Recreate`; initContainer `fix-perm` 属主 10001:10001; readiness 探针 `/ready`; 接收 demo-api v3 SDK 推送的 pprof profile |
+| pyroscope/service.yaml | Service (ClusterIP) | 4040, 供 demo-api 推送 (`PYROSCOPE_SERVER_ADDRESS`) 与 Grafana 数据源查询 |
+
+说明: demo-api v3 内嵌 pyroscope-io Python SDK, 每 10 秒推送 profile; Pyroscope 中
+当前已有的 profile 类型包括 `process_cpu:cpu:nanoseconds:cpu:nanoseconds`、
+`process_cpu:samples:count:cpu:nanoseconds` 及 memory/goroutines 等类型, 可用
+Connect 协议 `POST /querier.v1.QuerierService/ProfileTypes` 查询。
+
+### parca/ (Parca 持续 profiling server)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| parca/deployment.yaml | Deployment | 镜像 `ghcr.io/parca-dev/parca:v0.22.0` (服务器 docker pull 直连拉取后 `ctr -n k8s.io images import` 导入); **该镜像 Entrypoint 为空**, 必须显式 `command: ["/parca"]` (K8s 的 args 会替换镜像 Cmd); 参数 `--enable-persistence --storage-path=/var/lib/parca --log-level=info`; initContainer `fix-perm` 属主 10065 (nobody); readiness 探针 `/metrics` |
+| parca/pvc.yaml | PVC `parca-data` | 10Gi, RWO, StorageClass `local-path` |
+| parca/service.yaml | Service (ClusterIP) | 7070, Parca Web UI 与 gRPC 存储 API (parca-agent 的上报地址) |
+
+### parca-agent/ (Parca eBPF Agent, 当前集群已停用)
+
+| 文件 | 资源 | 配置说明 |
+|---|---|---|
+| parca-agent/rbac.yaml | ServiceAccount / ClusterRole / ClusterRoleBinding | SA `parca-agent`; 授权 nodes 与 pods 的 get/list/watch (发现节点与容器进程) |
+| parca-agent/daemonset.yaml | DaemonSet | 镜像 `ghcr.io/parca-dev/parca-agent:v0.35.1`; privileged + hostPID; 参数 `--remote-store-address=parca.monitoring.svc.cluster.local:7070 --remote-store-insecure --node=$(NODE_NAME)`; 挂载 `/sys/kernel/debug`、`/sys/kernel/tracing`、`/run/containerd/containerd.sock` (type: Socket); toleration Exists |
+
+**已知兼容性限制 (当前集群已停用该 DaemonSet, YAML 保留供旧内核节点使用)**:
+Parca 项目已归档, parca-agent v0.35.1 的 eBPF tracer 解析 `/proc/modules` 时未适配
+Linux 6.17+ 的行格式 (模块地址后新增 `(POE)` 标记), 启动即报
+`Failed to load eBPF tracer: failed to parse address value: '0x... (POE)'` 并循环重启。
+当前集群内核为 6.17.0-35, profiling 数据链路由 Pyroscope (SDK 推送) 承担。
+
 ### prometheus/ (指标监控)
 
 | 文件 | 资源 | 配置说明 |
@@ -192,12 +250,16 @@ kubectl apply -f tempo/
 kubectl apply -f loki/
 kubectl apply -f otel-collector/
 kubectl apply -f blackbox/
+kubectl apply -f pyroscope/
+kubectl apply -f parca/
+# parca-agent 依赖较旧内核 (见 parca-agent/ 章节), 当前集群已停用, 按需 apply:
+# kubectl apply -f parca-agent/
 kubectl apply -f prometheus/
 kubectl apply -f grafana/
 kubectl apply -f demo-api/
 ```
 
-demo-api 的镜像 `demo-api:v2` (含 JSON 结构化日志) 由源码仓库 python-observability-demo 构建, 并导入集群节点 containerd (`ctr -n k8s.io images import`), 部署清单中使用 `imagePullPolicy: IfNotPresent`。
+demo-api 的镜像 `demo-api:v3` (含 JSON 结构化日志与 Pyroscope SDK) 由源码仓库 python-observability-demo 构建, 并导入集群节点 containerd (`ctr -n k8s.io images import`), 部署清单中使用 `imagePullPolicy: IfNotPresent`。
 
 ## 访问入口
 
@@ -268,6 +330,29 @@ curl -s -u admin:admin "http://<节点IP>:30300/api/prometheus/grafana/api/v1/al
 注意: 邮件实际发送需要先在 grafana/deployment.yaml 中将 SMTP 占位符替换为真实的
 新浪邮箱发件账号与授权码, 再执行 `kubectl -n monitoring rollout restart deploy/grafana`。
 
+## 验证 Profiling
+
+1. 调用应用接口产生 CPU 负载:
+
+```bash
+curl "http://<节点IP>:30080/api/process?n=20&text=profile"
+```
+
+2. 查询 Pyroscope 确认 profile 数据已入库 (从集群内访问, Connect 协议需 POST + 协议头):
+
+```bash
+kubectl -n monitoring port-forward --address 127.0.0.1 svc/pyroscope 4040:4040 &
+curl -s -X POST -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
+  -d '{"name":"service_name"}' \
+  'http://127.0.0.1:4040/querier.v1.QuerierService/LabelValues'
+# 期望返回: {"names":["demo-api","pyroscope"]}
+```
+
+3. 打开 Grafana (http://<节点IP>:30300) -> Dashboards -> SRE Demo -> "Demo API Profiling":
+上方 FlameGraph 面板展示 CPU 火焰图 (可看到 `app.py` 的 `method_a`/`fibonacci`、
+`method_b` 及 flask/werkzeug 等调用栈), 下方 "函数级 CPU 开销明细" 表格展示每个
+函数的自身 CPU 与累计 CPU (可按列排序/过滤)。
+
 ## 镜像与版本
 
 | 组件 | 版本 | 镜像来源 |
@@ -303,8 +388,15 @@ git add . && git commit -m "..." && git push
 - demo-api 通过环境变量 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 指向 Tempo 的 OTLP/HTTP 接口
 - otel-collector operators 的 `on_error` 只允许 `send`/`drop` (没有 `continue`); OTTL 表达式中正则 `^{` 无需转义 (`^\{` 会报 invalid char escape)
 - health_check 扩展必须配置 `endpoint: 0.0.0.0:13133`, 默认仅监听 localhost 会导致 K8s 探针失败 (Pod 卡在 0/1 Running)
-- 修改 grafana/configmap.yaml 或 dashboard.yaml 后需重启 Grafana (`kubectl -n monitoring rollout restart deploy/grafana`) 才能生效
+- 修改 grafana/dashboard.yaml 后, ConfigMap 挂载文件变更由 provider 每 30s 自动重载 (无需重启); 修改 grafana/configmap.yaml (数据源) 后需重启 Grafana (`kubectl -n monitoring rollout restart deploy/grafana`) 才能生效
 - Loki 标签: `service_name` 来自容器名, 与 Tempo 的 `service.name` 一致; `k8s_pod_name`/`k8s_namespace_name` 等来自文件路径解析; JSON 字段 (level/method/duration_ms) 存于 structured metadata
 - Grafana 12 告警 provisioning: email contactPoint 的 `settings.addresses` 是**字符串** (多个收件人分号分隔), 写成数组会启动崩溃; 告警规则引用的数据源需要固定 uid (datasources.yaml 中 `uid: prometheus`), 且修改 uid 后旧库中同名的自动 uid 数据源会冲突导致启动失败 ("data source not found"), 需删除重建 PVC
 - ConfigMap 的 block scalar (`|-`) 中顶格 `---` 会终止字符串: 多个 provisioning 文档必须拆成不同的 key, 不能在一个 key 内用 `---` 分隔
 - SMTP 邮件告警: 发件配置在 grafana/deployment.yaml 环境变量 (当前为占位符); 告警收件人为 yschen0925@sina.com (grafana/alerting.yaml); 告警规则状态可用 `/api/prometheus/grafana/api/v1/alerts` API 查询
+- Parca 镜像 (ghcr.io/parca-dev/parca) 的 Entrypoint 为空、Cmd 为 `[/parca]`; K8s 中 `args` 会替换 Cmd, 必须显式写 `command: ["/parca"]`, 否则 args 被当作二进制参数导致 CrashLoopBackOff 且无业务日志
+- parca v0.22 启动参数: 配置文件用 `--config-path` (不是 `--config-file`); 持久化用 `--enable-persistence --storage-path=/var/lib/parca` (v0.22 配置文件中已无 storage 字段)
+- ghcr.io 镜像国内代理不可靠: ghcr.m.daocloud.io 返回 403, ghcr.nju.edu.cn 内容/速度不可靠; 建议在服务器 `docker pull ghcr.io/...` 直连拉取后 `docker save` + `ctr -n k8s.io images import` 导入
+- parca-agent 在 Linux 6.17+ 内核无法启动 (eBPF tracer 不识别 `/proc/modules` 新增的 `(POE)` 标记), 详见 parca-agent/ 章节; 当前 profiling 数据链路由 Pyroscope (SDK 推送) 承担
+- Grafana 12.2 的 pyroscope 数据源: provisioning 的 type 必须写完整插件 id `grafana-pyroscope-datasource`, 短名 `pyroscope` 会报 "Could not find plugin definition for data source" (该插件为 core 内置, 无法也不需要通过 GF_INSTALL_PLUGINS 外部安装)
+- Grafana 12.2 内置 pyroscope 数据源的查询语义: 仅 `queryType=profile` 可用 (返回火焰图帧 level/value/self/label); 旧 `queryType=flamegraph` 返回空帧, 时间序列 (SelectSeries) 查询不可用, 故 profiling dashboard 采用 flamegraph 面板 + table 面板组合
+- demo-api v3 通过 `PYROSCOPE_SERVER_ADDRESS` 环境变量 (pyroscope.monitoring:4040) 持续推送 CPU profile; Pyroscope 查询 API 走 Connect 协议, 需要 POST + `Content-Type: application/json` + `Connect-Protocol-Version: 1` 三个头

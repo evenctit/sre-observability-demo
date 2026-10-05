@@ -1,0 +1,15 @@
+# Pyroscope Server 配置 (all-in-one 单体模式)
+# Grafana 官方 profiling 组件 (Parca 团队并入后的继任者)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pyroscope-config
+  namespace: monitoring
+data:
+  pyroscope.yaml: |-
+    server:
+      http_listen_port: 4040
+    storage:
+      backend: filesystem
+      filesystem:
+        dir: /var/lib/pyroscope

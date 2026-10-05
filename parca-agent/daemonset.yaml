@@ -1,0 +1,68 @@
+# Parca Agent DaemonSet (eBPF 持续采集节点上所有进程的 CPU profile)
+# 需要 privileged 与 hostPID 以运行 eBPF 程序并读取宿主机进程
+#
+# 已知兼容性限制:
+# Parca 项目已归档 (最后一个版本 v0.35.1), 其 eBPF tracer 解析 /proc/modules
+# 的逻辑未适配 Linux 6.17+ 的新格式 (地址字段后新增 "(POE)" 标记), 会报错:
+#   Failed to load eBPF tracer: failed to parse address value: '0x... (POE)'
+# 因此当前集群 (kernel 6.17.0-35) 中该 DaemonSet 已停用, 仅保留 YAML 供
+# 旧内核节点使用; profiling 数据链路改由 Pyroscope (SDK 推送) 承担。
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: parca-agent
+  namespace: monitoring
+  labels:
+    app: parca-agent
+spec:
+  selector:
+    matchLabels:
+      app: parca-agent
+  template:
+    metadata:
+      labels:
+        app: parca-agent
+    spec:
+      serviceAccountName: parca-agent
+      hostPID: true
+      containers:
+        - name: parca-agent
+          image: ghcr.io/parca-dev/parca-agent:v0.35.1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          args:
+            # 上报到 Parca server (集群内 gRPC, 非加密)
+            - --remote-store-address=parca.monitoring.svc.cluster.local:7070
+            - --remote-store-insecure
+            # 节点名作为 profile 的 node 标签
+            - --node=$(NODE_NAME)
+            - --log-level=info
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: sys-kernel-debug
+              mountPath: /sys/kernel/debug
+            - name: sys-kernel-tracing
+              mountPath: /sys/kernel/tracing
+            # 容器运行时 socket, 用于发现容器与进程的关联
+            - name: containerd-sock
+              mountPath: /run/containerd/containerd.sock
+      volumes:
+        # eBPF 与内核调试文件系统访问
+        - name: sys-kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+        - name: sys-kernel-tracing
+          hostPath:
+            path: /sys/kernel/tracing
+        - name: containerd-sock
+          hostPath:
+            path: /run/containerd/containerd.sock
+            type: Socket
+      tolerations:
+        # 允许调度到任意节点 (演示环境单节点)
+        - operator: Exists

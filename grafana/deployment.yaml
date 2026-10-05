@@ -93,6 +93,8 @@ spec:
                 path: demo-api-logs.json
               - key: demo-api-health.json
                 path: demo-api-health.json
+              - key: demo-api-profiling.json
+                path: demo-api-profiling.json
         # 告警配置文件 (grafana/alerting.yaml)
         - name: alerting
           configMap:
