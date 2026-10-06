@@ -463,3 +463,123 @@ data:
         }
       ]
     }
+  # 股票日线趋势 dashboard: PostgreSQL 数据源查询 tushare.daily 表
+  # (batch job 定时拉取入库), 多股票变量筛选, 收盘价/成交量趋势 + 最新行情总览
+  tushare-daily.json: |-
+    {
+      "uid": "tushare-daily",
+      "title": "股票日线趋势 (Tushare)",
+      "description": "基于 PostgreSQL tushare.daily 表展示股票日线行情趋势 (收盘价/成交量/最新行情), 支持多股票筛选",
+      "tags": ["tushare", "stock", "postgres"],
+      "timezone": "browser",
+      "editable": true,
+      "refresh": "",
+      "schemaVersion": 39,
+      "version": 1,
+      "time": { "from": "now-90d", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "ts_code",
+            "label": "股票",
+            "type": "query",
+            "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+            "definition": "SELECT DISTINCT ts_code FROM tushare.daily ORDER BY ts_code",
+            "query": "SELECT DISTINCT ts_code FROM tushare.daily ORDER BY ts_code",
+            "refresh": 1,
+            "multi": true,
+            "includeAll": true,
+            "current": { "selected": true, "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "收盘价趋势",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyCNY",
+              "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "SELECT time, metric, value FROM (SELECT to_timestamp(trade_date, 'YYYYMMDD') AS time, ts_code AS metric, close AS value FROM tushare.daily WHERE ts_code IN ($ts_code)) s WHERE $__timeFilter(time) ORDER BY time"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "成交量趋势 (手)",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "lineWidth": 1, "fillOpacity": 30, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "SELECT time, metric, value FROM (SELECT to_timestamp(trade_date, 'YYYYMMDD') AS time, ts_code AS metric, vol::double precision AS value FROM tushare.daily WHERE ts_code IN ($ts_code)) s WHERE $__timeFilter(time) ORDER BY time"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "table",
+          "title": "最新交易日行情总览",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 9 },
+          "options": {
+            "showHeader": true
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "pct_chg" },
+                "properties": [
+                  { "id": "unit", "value": "percent" },
+                  { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        { "color": "green", "value": null },
+                        { "color": "red", "value": 0 }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres" },
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT ts_code, trade_date, open, high, low, close, pre_close, change, pct_chg, vol, amount FROM tushare.daily WHERE ts_code IN ($ts_code) AND trade_date = (SELECT max(trade_date) FROM tushare.daily) ORDER BY ts_code"
+            }
+          ]
+        }
+      ]
+    }

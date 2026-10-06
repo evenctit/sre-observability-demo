@@ -95,6 +95,8 @@ spec:
                 path: demo-api-health.json
               - key: demo-api-profiling.json
                 path: demo-api-profiling.json
+              - key: tushare-daily.json
+                path: tushare-daily.json
         # 告警配置文件 (grafana/alerting.yaml)
         - name: alerting
           configMap:

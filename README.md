@@ -13,7 +13,7 @@
                         ┌──────────────▼──────────────┐
                         │   Grafana 12.2.0 (PVC 10Gi) │
                         │ 数据源: Prometheus + Tempo   │
-                        │      + Loki + Pyroscope     │
+                        │  + Loki + Pyroscope + PG    │
                         └──┬──────────┬──────────┬────┘
                            │          │          │
           ┌────────────────▼──┐ ┌─────▼──────┐ ┌─▼──────────────────┐
@@ -70,6 +70,11 @@ profiling 链路: demo-api v3 内嵌 pyroscope-io Python SDK, 每 10 秒将进�
 dashboard (FlameGraph 火焰图 + 函数级 CPU 开销表)。另部署 Parca server 提供 eBPF
 持续 profiling 服务端能力 (parca-agent 对内核版本有要求, 当前集群已停用, 详见备注)。
 
+股票行情链路: tushare batch job (python_toshare_practice 仓库) 通过 tushare SDK 拉取
+A股日线行情, 写入宿主机 PostgreSQL (192.168.31.215:5432, tushare.daily 表) -> Grafana
+预置 PostgreSQL 数据源 (uid=postgres) 直连宿主机 5432 -> "股票日线趋势 (Tushare)"
+dashboard 按 ts_code 多选变量展示收盘价/成交量趋势与最新交易日行情总览。
+
 ## 目录结构 (按组件划分)
 
 ```
@@ -116,8 +121,8 @@ sre-observability-demo/
 │   ├── deployment.yaml
 │   └── service.yaml
 ├── grafana/             # 可视化与告警
-│   ├── configmap.yaml   # Prometheus + Tempo + Loki 数据源预配置
-│   ├── dashboard.yaml   # Dashboard as Code (服务日志总览 + 服务健康状态总览)
+│   ├── configmap.yaml   # Prometheus + Tempo + Loki + Pyroscope + PostgreSQL 数据源预配置
+│   ├── dashboard.yaml   # Dashboard as Code (服务日志总览 + 服务健康状态总览 + Demo API Profiling + 股票日线趋势)
 │   ├── alerting.yaml    # 告警 as Code (邮件 contactPoint + 策略 + 告警规则)
 │   ├── pvc.yaml         # 10Gi
 │   ├── deployment.yaml
@@ -229,8 +234,8 @@ Linux 6.17+ 的行格式 (模块地址后新增 `(POE)` 标记), 启动即报
 
 | 文件 | 资源 | 配置说明 |
 |---|---|---|
-| grafana/configmap.yaml | ConfigMap `grafana-datasources` | 预置三个数据源: `Prometheus` (uid 固定 `prometheus`, 默认, url `http://prometheus.monitoring.svc.cluster.local:9090`), `Tempo` (uid 固定为 `tempo`, url `http://tempo.monitoring.svc.cluster.local:3200`) 与 `Loki` (uid 固定为 `loki`, url `http://loki.monitoring.svc.cluster.local:3100`) |
-| grafana/dashboard.yaml | ConfigMap `grafana-dashboards` | Dashboard as Code: `dashboards.yaml` (provider, folder `SRE Demo`, 30s 自动刷新文件) + `demo-api-logs.json` (uid `demo-api-logs`: **服务日志总览 (Loki)** 多服务日志 dashboard — `service_name`/`Pod` 两个联动变量, 各服务日志量对比 (按服务分组)、每分钟日志行数 (按级别)、全集群日志流面板; 新增服务自动纳入) + `demo-api-health.json` (uid `demo-api-health`: **服务健康状态总览 (Blackbox)** 多服务 dashboard — 可用/异常服务数、平均探测耗时、近5分钟失败次数 Stat, 服务状态墙 (每服务一个 UP/DOWN 状态块), 按 `instance` 变量 repeat 的探测耗时与状态码面板; 查询按 `job=~"blackbox-.*"` 匹配, 新增服务自动纳入) |
+| grafana/configmap.yaml | ConfigMap `grafana-datasources` | 预置五个数据源: `Prometheus` (uid 固定 `prometheus`, 默认, url `http://prometheus.monitoring.svc.cluster.local:9090`), `Tempo` (uid 固定为 `tempo`, url `http://tempo.monitoring.svc.cluster.local:3200`), `Loki` (uid 固定为 `loki`, url `http://loki.monitoring.svc.cluster.local:3100`), `Pyroscope` (uid 固定为 `pyroscope`, type 需写完整插件 id `grafana-pyroscope-datasource`) 与 `PostgreSQL` (uid 固定为 `postgres`, url `192.168.31.215:5432`, 用户 postgres, 默认库 postgres 必须写在 `jsonData.database`, 密码写在 `secureJsonData.password`) |
+| grafana/dashboard.yaml | ConfigMap `grafana-dashboards` | Dashboard as Code: `dashboards.yaml` (provider, folder `SRE Demo`, 30s 自动刷新文件) + `demo-api-logs.json` (uid `demo-api-logs`: **服务日志总览 (Loki)** 多服务日志 dashboard — `service_name`/`Pod` 两个联动变量, 各服务日志量对比 (按服务分组)、每分钟日志行数 (按级别)、全集群日志流面板; 新增服务自动纳入) + `demo-api-health.json` (uid `demo-api-health`: **服务健康状态总览 (Blackbox)** 多服务 dashboard — 可用/异常服务数、平均探测耗时、近5分钟失败次数 Stat, 服务状态墙 (每服务一个 UP/DOWN 状态块), 按 `instance` 变量 repeat 的探测耗时与状态码面板; 查询按 `job=~"blackbox-.*"` 匹配, 新增服务自动纳入) + `tushare-daily.json` (uid `tushare-daily`: **股票日线趋势 (Tushare)** PostgreSQL dashboard — `ts_code` 多选变量 (query 变量, `query` 为字符串 SQL, All 展开为全部股票), "收盘价趋势"/"成交量趋势 (手)" 两个时序面板 (子查询转时间戳 + `$__timeFilter` 宏), "最新交易日行情总览" 表格 (涨跌幅列涨绿跌红)) |
 | grafana/alerting.yaml | ConfigMap `grafana-alerting` | 告警 as Code, 三个 provisioning 文件 — `contact-points.yaml` (email 接收人 yschen0925@sina.com), `policies.yaml` (根路由 -> demo-api-email), `alert-rules.yaml` (规则组 `demo-api-health`: 规则 "Demo API 无法访问", 条件 `probe_success{job="blackbox-demo-api"} < 1` 持续 1m 触发, noDataState=Alerting, severity=critical) |
 | grafana/deployment.yaml | Deployment | 镜像 `grafana:12.2.0`; `strategy: Recreate`; initContainer `fix-perm` 属主改为 472:472; 环境变量 `GF_SECURITY_ADMIN_USER=admin` / `GF_SECURITY_ADMIN_PASSWORD=admin`; SMTP 告警发件配置 `GF_SMTP_ENABLED=true`, `GF_SMTP_HOST=smtp.sina.com:465`, 发件账号/授权码为占位符 `REPLACE-WITH-SENDER@sina.com` / `REPLACE-WITH-SMTP-AUTH-CODE` (替换后重启生效); PVC 挂 `/var/lib/grafana`, 数据源挂 `/etc/grafana/provisioning/datasources`, 告警配置挂 `/etc/grafana/provisioning/alerting`; readiness 探针 `/api/health` |
 | grafana/pvc.yaml | PVC `grafana-data` | 10Gi, RWO, StorageClass `local-path` |
@@ -269,7 +274,7 @@ demo-api 的镜像 `demo-api:v3` (含 JSON 结构化日志与 Pyroscope SDK) 由
 
 | 组件 | 地址 | 说明 |
 |---|---|---|
-| Grafana | http://<节点IP>:30300 | 账号 admin / admin; dashboard: SRE Demo -> "服务日志总览 (Loki)"、"服务健康状态总览 (Blackbox)" 与 "Demo API Profiling" |
+| Grafana | http://<节点IP>:30300 | 账号 admin / admin; dashboard: SRE Demo -> "服务日志总览 (Loki)"、"服务健康状态总览 (Blackbox)"、"Demo API Profiling" 与 "股票日线趋势 (Tushare)" |
 | demo-api | http://<节点IP>:30080 | RESTful API (/api/process, /healthz) |
 | Prometheus | ClusterIP:9090 | 集群内访问 (Grafana 数据源) |
 | Blackbox Exporter | ClusterIP:9115 | 集群内访问 (Prometheus 经 /probe 探测) |
@@ -357,6 +362,21 @@ curl -s -X POST -H 'Content-Type: application/json' -H 'Connect-Protocol-Version
 `method_b` 及 flask/werkzeug 等调用栈), 下方 "函数级 CPU 开销明细" 表格展示每个
 函数的自身 CPU 与累计 CPU (可按列排序/过滤)。
 
+## 验证股票日线趋势
+
+1. 确认日线数据已入库 (在宿主机执行, tushare batch job 拉取写入):
+
+```bash
+PGPASSWORD=westlife psql -h 127.0.0.1 -U postgres -d postgres \
+  -c "SELECT ts_code, count(*), max(trade_date) FROM tushare.daily GROUP BY ts_code"
+```
+
+2. 打开 Grafana (http://<节点IP>:30300) -> Dashboards -> SRE Demo -> "股票日线趋势 (Tushare)":
+顶部 "股票" 下拉变量默认 All (全部股票, 支持多选/单选); "收盘价趋势" 与
+"成交量趋势 (手)" 两个时序面板展示所选股票近 90 天的日线曲线 (曲线随变量勾选联动
+增减), "最新交易日行情总览" 表格展示所选股票最近一个交易日的开高低收、涨跌幅
+(涨绿跌红)、成交量与成交额。
+
 ## 镜像与版本
 
 | 组件 | 版本 | 镜像来源 |
@@ -393,6 +413,7 @@ git add . && git commit -m "..." && git push
 - otel-collector operators 的 `on_error` 只允许 `send`/`drop` (没有 `continue`); OTTL 表达式中正则 `^{` 无需转义 (`^\{` 会报 invalid char escape)
 - health_check 扩展必须配置 `endpoint: 0.0.0.0:13133`, 默认仅监听 localhost 会导致 K8s 探针失败 (Pod 卡在 0/1 Running)
 - 修改 grafana/dashboard.yaml 后, ConfigMap 挂载文件变更由 provider 每 30s 自动重载 (无需重启); 修改 grafana/configmap.yaml (数据源) 后需重启 Grafana (`kubectl -n monitoring rollout restart deploy/grafana`) 才能生效
+- Grafana postgres 数据源与 query 变量 provisioning: 默认库必须写在 `jsonData.database` (顶层 `database:` 字段不被识别); query 类型变量的 `query` 必须是字符串 (写成对象会被后端当作 rawSql 对象导致变量查询 500, 变量选项为空后面板 SQL 展开成 `IN ()` 全部报错); `$__timeFilter` 宏不支持嵌套括号表达式, 复杂 SQL 需用子查询包一层后 `WHERE $__timeFilter(time)`
 - Loki 标签: `service_name` 来自容器名, 与 Tempo 的 `service.name` 一致; `k8s_pod_name`/`k8s_namespace_name` 等来自文件路径解析; JSON 字段 (level/method/duration_ms) 存于 structured metadata
 - Grafana 12 告警 provisioning: email contactPoint 的 `settings.addresses` 是**字符串** (多个收件人分号分隔), 写成数组会启动崩溃; 告警规则引用的数据源需要固定 uid (datasources.yaml 中 `uid: prometheus`), 且修改 uid 后旧库中同名的自动 uid 数据源会冲突导致启动失败 ("data source not found"), 需删除重建 PVC
 - ConfigMap 的 block scalar (`|-`) 中顶格 `---` 会终止字符串: 多个 provisioning 文档必须拆成不同的 key, 不能在一个 key 内用 `---` 分隔
