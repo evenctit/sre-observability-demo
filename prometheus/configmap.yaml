@@ -2,6 +2,7 @@
 # - prometheus 自身指标
 # - kubelet cAdvisor 容器指标 (通过 apiserver proxy + ServiceAccount token)
 # - 带有 prometheus.io/scrape: "true" 注解的 Pod 自动发现
+# - sre-observability-ui HTTP 指标 (宿主机 192.168.31.112:3000, 请求计数/成功率/P95 延时)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -87,3 +88,9 @@ data:
           # 实际抓取地址改为 blackbox-exporter
           - target_label: __address__
             replacement: blackbox-exporter.monitoring.svc.cluster.local:9115
+      # SRE 可观测性 UI (Node.js 架构展示服务, 运行在宿主机 192.168.31.112:3000)
+      # 指标: http_requests_total (每分钟请求数/请求成功率), http_request_duration_seconds (P95 请求延时)
+      # P95 延时查询: histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))
+      - job_name: sre-observability-ui
+        static_configs:
+          - targets: ['192.168.31.112:3000']

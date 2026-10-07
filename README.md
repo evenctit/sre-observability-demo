@@ -225,7 +225,7 @@ Linux 6.17+ 的行格式 (模块地址后新增 `(POE)` 标记), 启动即报
 | 文件 | 资源 | 配置说明 |
 |---|---|---|
 | prometheus/rbac.yaml | ServiceAccount / ClusterRole / ClusterRoleBinding | SA `prometheus`; 授权 nodes, nodes/proxy, services, endpoints, pods 读取及 `/metrics` 非资源 URL, 供 apiserver proxy 抓取使用 |
-| prometheus/configmap.yaml | ConfigMap `prometheus-config` | `prometheus.yml`: 全局抓取间隔 30s; 五个 job — `prometheus` (自身 9090), `kubernetes-nodes-cadvisor` (https 经 apiserver proxy 抓 `/api/v1/nodes/<node>/proxy/metrics/cadvisor`, 使用 SA token, `insecure_skip_verify`), `kubernetes-pods` (按注解 `prometheus.io/scrape: "true"` 自动发现), `blackbox-demo-api` 与 `blackbox-tushare-service` (经 blackbox-exporter 探测各服务 /healthz, relabel 注入 target 参数; 新增服务按模板追加 job) |
+| prometheus/configmap.yaml | ConfigMap `prometheus-config` | `prometheus.yml`: 全局抓取间隔 30s; 六个 job — `prometheus` (自身 9090), `kubernetes-nodes-cadvisor` (https 经 apiserver proxy 抓 `/api/v1/nodes/<node>/proxy/metrics/cadvisor`, 使用 SA token, `insecure_skip_verify`), `kubernetes-pods` (按注解 `prometheus.io/scrape: "true"` 自动发现), `blackbox-demo-api` 与 `blackbox-tushare-service` (经 blackbox-exporter 探测各服务 /healthz, relabel 注入 target 参数; 新增服务按模板追加 job), `sre-observability-ui` (抓取宿主机 192.168.31.112:3000 的 `/metrics`, 指标 `http_requests_total`/`http_request_duration_seconds`, 用于请求计数/成功率/P95 延时) |
 | prometheus/pvc.yaml | PVC `prometheus-data` | 10Gi, RWO, StorageClass `local-path` |
 | prometheus/deployment.yaml | Deployment | 镜像 `prom/prometheus:v3.5.0`; `strategy: Recreate`; initContainer `fix-perm` 将数据目录属主改为 65534:65534; 参数 `--storage.tsdb.retention.time=15d` (保留 15 天); 端口 9090 |
 | prometheus/service.yaml | Service (ClusterIP) | 9090, 供 Grafana 数据源访问 |
